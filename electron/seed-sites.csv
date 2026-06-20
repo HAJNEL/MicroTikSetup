@@ -1,0 +1,5 @@
+SiteName,WireGuardIp,LanSubnet,MikroTikLanIp,DeviceIp,DeviceGateway,MikroTikPublicKey,DateConfigured
+Kyospan - Riverland,10.10.0.2,192.168.88.0/24,192.168.88.1,192.168.88.200,192.168.88.1,8DhuWdorRm2WjjGPtKo26GrXDHdLSFjgpLllhr9Xsxc=,(imported from EC2 config)
+Kyospan - Century City,10.10.0.3,192.168.89.0/24,192.168.89.1,192.168.89.200,192.168.89.1,chDoNoCyClrYBpMnYbfRE25RKQIAtKxvFoSLnA+PxkM=,(imported from EC2 config)
+Kyospan - Somerset West Hyper,10.10.0.4,192.168.90.0/24,192.168.90.1,192.168.90.200,192.168.90.1,F003HMxDWiSnxHwQq2gH5KCbLHCQmvvmp7ZyBOmu7Vs=,2026-06-07 20:12
+Kyospan - Eikestad,10.10.0.5,192.168.91.0/24,192.168.91.1,192.168.91.200,192.168.91.1,P+PJNDYtouy8GQhuSGE+qglHpfDZpfPMBHWwR1xVfk0=,2026-06-08 00:30

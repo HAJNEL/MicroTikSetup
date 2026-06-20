@@ -1,0 +1,23 @@
+appId: com.hikcentral.microtiksetup
+productName: HikCentral Site Setup
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/app.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+asar: true
+extraResources:
+  - from: electron/seed-sites.csv
+    to: seed-sites.csv
