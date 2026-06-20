@@ -1,7 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import CredentialsForm from '../components/CredentialsForm'
 import LogConsole from '../components/LogConsole'
+import Stepper from '../components/Stepper'
+import Collapsible from '../components/Collapsible'
 import { SshCredentials, WifiInterfaceInfo } from '../types'
+
+const WIFI_STAGES: ('creds' | 'pick' | 'configure' | 'done')[] = ['creds', 'pick', 'configure', 'done']
+const WIFI_STEP_LABELS = ['Connect', 'Choose', 'Update', 'Done']
 
 export default function WifiPage() {
   const [creds, setCreds] = useState<SshCredentials>({ routerIp: '', username: 'admin', password: '' })
@@ -71,19 +76,25 @@ export default function WifiPage() {
   }
 
   return (
-    <div>
-      <div className="panel">
-        <h2>Change WiFi name &amp; password</h2>
-        <p className="muted">Connects to a MikroTik router over SSH and updates its SSID + WPA2 passphrase.</p>
+    <div className="wizard">
+      <h2 style={{ marginTop: 0 }}>Change WiFi name &amp; password</h2>
+      <Stepper steps={WIFI_STEP_LABELS} current={Math.max(0, WIFI_STAGES.indexOf(stage))} />
 
-        {detecting && <p className="muted">Detecting your current router (default gateway)...</p>}
+      <div className="panel">
+        <h3 className="step-title">Connect to the router</h3>
+        <p className="muted">
+          Plug into the router (or join its WiFi) and enter how to reach it. We'll list its WiFi networks so you can
+          pick which one to change.
+        </p>
+
+        {detecting && <p className="muted">Looking for your router…</p>}
 
         <CredentialsForm value={creds} onChange={setCreds} disabled={busy || stage !== 'creds'} />
 
         {stage === 'creds' && (
           <div className="actions">
             <button className="primary" onClick={loadNetworks} disabled={busy || !creds.routerIp || !creds.password}>
-              {busy ? 'Connecting...' : 'Connect & list WiFi networks'}
+              {busy ? 'Connecting…' : 'Connect & show WiFi networks'}
             </button>
           </div>
         )}
@@ -170,7 +181,9 @@ export default function WifiPage() {
       )}
 
       <div className="panel">
-        <LogConsole resetKey={resetKey} />
+        <Collapsible summary="Show technical details (live router output)">
+          <LogConsole resetKey={resetKey} />
+        </Collapsible>
       </div>
     </div>
   )

@@ -335,3 +335,288 @@ code {
 .wizard-steps .dot.done {
   background: var(--accent);
 }
+
+/* ---- Sidebar extras ---- */
+.brand {
+  margin-bottom: 12px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-icon {
+  font-size: 15px;
+  width: 18px;
+  text-align: center;
+}
+
+.sidebar-spacer {
+  flex: 1;
+}
+
+.sidebar-foot {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- Banner info variant ---- */
+.banner.info {
+  border-color: var(--accent-dim);
+  color: var(--text);
+  background: rgba(79, 140, 255, 0.08);
+}
+
+/* ---- Home dashboard ---- */
+.home {
+  max-width: 880px;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.action-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  height: 100%;
+}
+
+.action-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-panel-2);
+}
+
+.action-card.primary-card {
+  border-color: var(--accent-dim);
+  background: rgba(79, 140, 255, 0.06);
+}
+
+.action-icon {
+  font-size: 26px;
+}
+
+.action-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.action-desc {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  flex: 1;
+}
+
+.action-go {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 4px;
+}
+
+/* ---- Page header row ---- */
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+/* ---- Search + empty state ---- */
+.search {
+  margin-bottom: 14px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 28px 16px;
+}
+
+.empty-icon {
+  font-size: 34px;
+  margin-bottom: 8px;
+}
+
+/* ---- Labelled stepper ---- */
+.wizard {
+  max-width: 760px;
+}
+
+.wizard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stepper {
+  display: flex;
+  align-items: flex-start;
+  margin: 14px 0 20px;
+}
+
+.stepper-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.stepper-step:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 13px;
+  left: -50%;
+  width: 100%;
+  height: 2px;
+  background: var(--border);
+}
+
+.stepper-step.done::before,
+.stepper-step.current::before {
+  background: var(--accent-dim);
+}
+
+.stepper-dot {
+  position: relative;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.stepper-step.done .stepper-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.stepper-step.current .stepper-dot {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.stepper-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.stepper-step.current .stepper-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.step-title {
+  margin-top: 0;
+  font-size: 15px;
+}
+
+/* ---- Summary grid ---- */
+.summary-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 18px;
+  margin: 14px 0;
+  font-size: 13px;
+  align-items: center;
+}
+
+.summary-label {
+  color: var(--text-dim);
+}
+
+/* ---- Collapsible disclosure ---- */
+.collapsible {
+  margin: 12px 0;
+}
+
+.collapsible-toggle {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  padding: 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.collapsible-toggle:hover:not(:disabled) {
+  border-color: transparent;
+  text-decoration: underline;
+}
+
+.collapsible-caret {
+  display: inline-block;
+  transition: transform 0.15s;
+}
+
+.collapsible-caret.open {
+  transform: rotate(90deg);
+}
+
+.collapsible-body {
+  border-left: 2px solid var(--border);
+  padding: 4px 0 4px 14px;
+  margin-top: 4px;
+}
+
+/* ---- Run step list ---- */
+.run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.run-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.run-step-mark {
+  color: var(--success);
+  width: 14px;
+  text-align: center;
+}
+
+/* ---- Copy block ---- */
+.copy-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.copy-block .console {
+  width: 100%;
+}

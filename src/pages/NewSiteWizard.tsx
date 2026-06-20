@@ -1,15 +1,19 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import LogConsole from '../components/LogConsole'
-import { SETUP_STEP_LABELS, STEP_CHANGE_BRIDGE_IP, SiteRecord } from '../types'
+import Stepper from '../components/Stepper'
+import Collapsible from '../components/Collapsible'
+import CopyButton from '../components/CopyButton'
+import { SETUP_STEP_LABELS, STEP_CHANGE_BRIDGE_IP, SiteRecord, NetworkAdapterInfo } from '../types'
 
 interface Props {
   onFinished: () => void
+  onCancel: () => void
 }
 
-type Stage = 'form' | 'steps' | 'confirmLaptopIp' | 'confirmPlan' | 'running' | 'result'
+type Stage = 'name' | 'connect' | 'prepComputer' | 'review' | 'running' | 'result'
 
-export default function NewSiteWizard({ onFinished }: Props) {
-  const [stage, setStage] = useState<Stage>('form')
+export default function NewSiteWizard({ onFinished, onCancel }: Props) {
+  const [stage, setStage] = useState<Stage>('name')
 
   const [siteName, setSiteName] = useState('')
   const [wgIp, setWgIp] = useState('')
@@ -23,6 +27,12 @@ export default function NewSiteWizard({ onFinished }: Props) {
   const [detecting, setDetecting] = useState(true)
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
+
+  // This-computer IP helper (for the "prepare your computer" step)
+  const [adapters, setAdapters] = useState<NetworkAdapterInfo[]>([])
+  const [adapter, setAdapter] = useState('')
+  const [ipApplying, setIpApplying] = useState(false)
+  const [ipResult, setIpResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   const [resetKey, setResetKey] = useState(0)
   const [running, setRunning] = useState(false)
@@ -39,40 +49,89 @@ export default function NewSiteWizard({ onFinished }: Props) {
       if (ip) setRouterIp(ip)
       setDetecting(false)
     })
+    window.api.network.listAdapters().then((list) => {
+      setAdapters(list)
+      const ethernet = list.find((a) => a.kind === 'Ethernet')
+      setAdapter((ethernet ?? list[0])?.name ?? '')
+    })
   }, [])
 
-  async function proceedFromForm() {
+  const lanSubnet = `192.168.${lanThird}.0/24`
+  const mikroTikLanIp = `192.168.${lanThird}.1`
+  const deviceIp = `192.168.${lanThird}.200`
+  const myComputerIp = `192.168.${lanThird}.2`
+  const changesBridge = steps[STEP_CHANGE_BRIDGE_IP]
+
+  // Stepper labels adapt to whether the LAN-IP change (and thus the computer-prep step) is in play.
+  const stageOrder: Stage[] = changesBridge
+    ? ['name', 'connect', 'prepComputer', 'review', 'running']
+    : ['name', 'connect', 'review', 'running']
+  const stepperLabels = changesBridge
+    ? ['Name', 'Connect', 'Your PC', 'Review', 'Run']
+    : ['Name', 'Connect', 'Review', 'Run']
+  const currentStepIndex = useMemo(() => {
+    const s: Stage = stage === 'result' ? 'running' : stage
+    const idx = stageOrder.indexOf(s)
+    return idx < 0 ? 0 : idx
+  }, [stage, stageOrder])
+
+  async function proceedFromName() {
     setNameWarning(null)
     setSubnetWarning(null)
-    if (!siteName.trim()) return
-    const lanSubnet = `192.168.${lanThird}.0/24`
+    if (!siteName.trim() || !lanThird) return
     const [nameExists, subnetInUse] = await Promise.all([
       window.api.sites.nameExists(siteName),
       window.api.sites.subnetInUse(lanSubnet),
     ])
-    if (nameExists) setNameWarning(`A site named "${siteName}" already exists in the tracking CSV.`)
+    if (nameExists) setNameWarning(`A site named "${siteName}" already exists. Pick a different name to avoid confusion.`)
     if (subnetInUse)
       setSubnetWarning(
-        `LAN subnet ${lanSubnet} is already recorded for another site. Each site MUST have a unique LAN subnet, or routing on the EC2 server will break.`,
+        `Network 192.168.${lanThird}.x is already used by another site. Each site must use its own network, or the VPN routing on the server will break. Open "Advanced settings" to change it.`,
       )
-    setStage('steps')
+    setStage('connect')
   }
 
   function toggleStep(i: number) {
     setSteps((prev) => prev.map((v, idx) => (idx === i ? !v : v)))
   }
 
-  function proceedFromSteps() {
-    if (steps[STEP_CHANGE_BRIDGE_IP]) {
-      setStage('confirmLaptopIp')
-    } else {
-      setStage('confirmPlan')
+  function afterConnect() {
+    setStage(changesBridge ? 'prepComputer' : 'review')
+  }
+
+  async function applyMyIp() {
+    if (!adapter) return
+    setIpApplying(true)
+    setIpResult(null)
+    try {
+      const ok = await window.api.network.applyStaticIp(adapter, myComputerIp, '255.255.255.0', mikroTikLanIp, '8.8.8.8')
+      setIpResult(
+        ok
+          ? { ok: true, text: `Done — "${adapter}" is now set to ${myComputerIp}. You can continue.` }
+          : { ok: false, text: 'That didn\'t complete. Did you approve the Windows permission (UAC) prompt? You can try again, or set it manually using the steps below.' },
+      )
+    } catch (ex: any) {
+      setIpResult({ ok: false, text: ex?.message ?? String(ex) })
+    } finally {
+      setIpApplying(false)
     }
   }
 
-  const lanSubnet = `192.168.${lanThird}.0/24`
-  const mikroTikLanIp = `192.168.${lanThird}.1`
-  const deviceIp = `192.168.${lanThird}.200`
+  async function resetMyIpToDhcp() {
+    if (!adapter) return
+    setIpApplying(true)
+    setIpResult(null)
+    try {
+      const ok = await window.api.network.applyDhcp(adapter)
+      setIpResult(
+        ok
+          ? { ok: true, text: `"${adapter}" is back to automatic (DHCP).` }
+          : { ok: false, text: 'That didn\'t complete (the Windows permission prompt may have been declined).' },
+      )
+    } finally {
+      setIpApplying(false)
+    }
+  }
 
   async function run() {
     setStage('running')
@@ -97,197 +156,298 @@ export default function NewSiteWizard({ onFinished }: Props) {
     }
   }
 
-  return (
-    <div>
-      <h2 style={{ marginTop: 0 }}>New Remote Site Setup</h2>
-      <p className="muted">
-        Configures a MikroTik wAP LTE router for a new HikCentral site, following the HikCentral Remote Site Setup
-        Guide. Make sure you're connected to the router's current LAN (default 192.168.88.1).
-      </p>
+  const activeSteps = SETUP_STEP_LABELS.filter((_, i) => steps[i])
 
-      {stage === 'form' && (
+  return (
+    <div className="wizard">
+      <div className="wizard-head">
+        <h2 style={{ marginTop: 0 }}>Set up a new site</h2>
+        {stage !== 'running' && stage !== 'result' && (
+          <button onClick={onCancel}>Cancel</button>
+        )}
+      </div>
+
+      <Stepper steps={stepperLabels} current={currentStepIndex} />
+
+      {/* STEP 1 — Name the site */}
+      {stage === 'name' && (
         <div className="panel">
+          <h3 className="step-title">Name this site</h3>
+          <p className="muted">Give the site a short, recognisable name. We'll pick sensible network settings for you.</p>
           <div className="field">
             <label>Site name</label>
-            <input value={siteName} onChange={(e) => setSiteName(e.target.value)} placeholder="e.g. Riverland" />
+            <input
+              value={siteName}
+              onChange={(e) => setSiteName(e.target.value)}
+              placeholder="e.g. Riverland"
+              autoFocus
+            />
           </div>
-          <div className="row">
-            <div className="field">
-              <label>WireGuard IP for this site</label>
-              <input value={wgIp} onChange={(e) => setWgIp(e.target.value)} />
+
+          {lanThird > 0 && (
+            <div className="banner info">
+              This site will use network <code>192.168.{lanThird}.x</code>. The router will be{' '}
+              <code>{mikroTikLanIp}</code> and the camera/NVR will be <code>{deviceIp}</code>. You don't need to change
+              anything unless you have a reason to.
             </div>
-            <div className="field">
-              <label>LAN subnet third octet</label>
-              <input
-                type="number"
-                value={lanThird}
-                onChange={(e) => setLanThird(parseInt(e.target.value, 10) || 0)}
-              />
+          )}
+
+          <Collapsible summary="Advanced settings (network addresses)">
+            <p className="muted">
+              These are auto-filled to the next free values. Only change them if you know they clash with another site.
+            </p>
+            <div className="row">
+              <div className="field">
+                <label>WireGuard (VPN) IP for this site</label>
+                <input value={wgIp} onChange={(e) => setWgIp(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>LAN network (the X in 192.168.X.0)</label>
+                <input
+                  type="number"
+                  value={lanThird}
+                  onChange={(e) => setLanThird(parseInt(e.target.value, 10) || 0)}
+                />
+              </div>
             </div>
-          </div>
-          <p className="muted">
-            Will use LAN subnet <code>192.168.{lanThird}.0/24</code>, MikroTik IP <code>192.168.{lanThird}.1</code>,
-            device IP <code>192.168.{lanThird}.200</code>.
-          </p>
+          </Collapsible>
+
           <div className="actions">
-            <button className="primary" onClick={proceedFromForm} disabled={!siteName.trim() || !lanThird}>
-              Next: choose setup steps
+            <button className="primary" onClick={proceedFromName} disabled={!siteName.trim() || !lanThird}>
+              Next →
             </button>
           </div>
         </div>
       )}
 
-      {stage === 'steps' && (
+      {/* STEP 2 — Connect to the router */}
+      {stage === 'connect' && (
         <div className="panel">
           {nameWarning && <div className="banner warn">{nameWarning}</div>}
           {subnetWarning && <div className="banner warn">{subnetWarning}</div>}
-          <h2>Select which setup steps to run for this site</h2>
-          <div className="checklist">
-            {SETUP_STEP_LABELS.map((label, i) => (
-              <label key={i}>
-                <input type="checkbox" checked={steps[i]} onChange={() => toggleStep(i)} />
-                {label}
-              </label>
-            ))}
-          </div>
-          {!steps[2] && (steps[3] || steps[4] || steps[5] || steps[6]) && (
-            <div className="banner warn">
-              Firewall/MSS/NAT/watchdog steps assume the WireGuard tunnel already exists on this router (you've
-              unchecked "Configure WireGuard tunnel"). Make sure that's true.
-            </div>
-          )}
-          <div className="actions">
-            <button onClick={() => setStage('form')}>Back</button>
-            <button className="primary" onClick={proceedFromSteps}>
-              Next
-            </button>
-          </div>
-        </div>
-      )}
-
-      {stage === 'confirmLaptopIp' && (
-        <div className="panel">
-          <h2>Action required before continuing (Step 1.10)</h2>
-          <p>On THIS computer, set your Ethernet adapter to a manual/static IP on the NEW subnet:</p>
-          <ul>
-            <li>
-              IP address: <code>192.168.{lanThird}.2</code>
-            </li>
-            <li>
-              Subnet mask: <code>255.255.255.0</code>
-            </li>
-            <li>
-              Gateway: <code>{mikroTikLanIp}</code>
-            </li>
-            <li>
-              DNS: <code>8.8.8.8</code>
-            </li>
-          </ul>
-          <div className="banner warn">
-            If you skip this, you will lose access to the router after the bridge IP changes, and will need to
-            reconnect via WinBox → Neighbors → MAC address. You can use the "IP assignment setup" action from a
-            site's detail page to apply this automatically once the site is saved — for a brand-new site, set it
-            manually via Windows Settings → Network &amp; Internet for now.
-          </div>
-          <div className="actions">
-            <button onClick={() => setStage('steps')}>Back</button>
-            <button className="primary" onClick={() => setStage('confirmPlan')}>
-              I've finished changing my computer's IP as shown above
-            </button>
-          </div>
-        </div>
-      )}
-
-      {stage === 'confirmPlan' && (
-        <div className="panel">
-          <h2>Plan summary</h2>
-          <p>
-            <span className="muted">Site name:</span> {siteName}
+          <h3 className="step-title">Connect to the router</h3>
+          <p className="muted">
+            Make sure your computer is plugged into one of the router's LAN ports. New routers answer at{' '}
+            <code>192.168.88.1</code> with username <code>admin</code> and a blank password.
           </p>
-          <p>
-            <span className="muted">WireGuard IP:</span> <code>{wgIp}/24</code>
-          </p>
-          <p>
-            <span className="muted">LAN subnet:</span> <code>{lanSubnet}</code>
-          </p>
-          <p>
-            <span className="muted">MikroTik LAN IP:</span> <code>{mikroTikLanIp}</code>
-          </p>
-          <p>
-            <span className="muted">Device IP:</span> <code>{deviceIp}</code>
-          </p>
-
-          <h2>Router connection (current address, before any changes)</h2>
-          {detecting && <p className="muted">Detecting your current router (default gateway)...</p>}
+          {detecting && <p className="muted">Looking for your router…</p>}
           <div className="row">
             <div className="field">
-              <label>Router's current IP (the address you connect to right now)</label>
+              <label>Router's current address</label>
               <input value={routerIp} onChange={(e) => setRouterIp(e.target.value)} placeholder="192.168.88.1" />
             </div>
             <div className="field">
-              <label>SSH username</label>
+              <label>Username</label>
               <input value={username} onChange={(e) => setUsername(e.target.value)} />
             </div>
             <div className="field">
-              <label>SSH password</label>
+              <label>Password</label>
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
             </div>
           </div>
-
           <div className="actions">
-            <button onClick={() => setStage(steps[STEP_CHANGE_BRIDGE_IP] ? 'confirmLaptopIp' : 'steps')}>Back</button>
-            <button className="primary" onClick={run} disabled={!routerIp || !password}>
-              Proceed with this plan
+            <button onClick={() => setStage('name')}>← Back</button>
+            <button className="primary" onClick={afterConnect} disabled={!routerIp}>
+              Next →
+            </button>
+          </div>
+          <p className="muted" style={{ fontSize: 12 }}>
+            We'll connect when you press Start on the review screen, so you can fix the address here if it's wrong.
+          </p>
+        </div>
+      )}
+
+      {/* STEP 3 — Prepare this computer (only when the LAN IP will change) */}
+      {stage === 'prepComputer' && (
+        <div className="panel">
+          <h3 className="step-title">Prepare your computer</h3>
+          <p>
+            During setup the router's address changes to <code>{mikroTikLanIp}</code>. For your computer to keep
+            talking to it, your network adapter needs a matching address. We can set this for you:
+          </p>
+          <div className="field">
+            <label>Which network adapter is plugged into the router?</label>
+            <select value={adapter} onChange={(e) => setAdapter(e.target.value)} disabled={ipApplying}>
+              {adapters.length === 0 && <option value="">No adapters found</option>}
+              {adapters.map((a) => (
+                <option key={a.name} value={a.name}>
+                  {a.name} ({a.kind})
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="muted">
+            This sets <code>{adapter || 'your adapter'}</code> to IP <code>{myComputerIp}</code>, gateway{' '}
+            <code>{mikroTikLanIp}</code>. Windows will ask for permission — approve it.
+          </p>
+          <div className="actions">
+            <button className="primary" onClick={applyMyIp} disabled={ipApplying || !adapter}>
+              {ipApplying ? 'Setting…' : '⚙ Set my computer\'s IP automatically'}
+            </button>
+          </div>
+          {ipResult && (
+            <div className={`banner ${ipResult.ok ? 'success' : 'warn'}`} style={{ marginTop: 12 }}>
+              {ipResult.text}
+            </div>
+          )}
+
+          <Collapsible summary="Prefer to set it yourself? Manual steps">
+            <p className="muted">In Windows Settings → Network &amp; Internet → your Ethernet adapter, set:</p>
+            <ul>
+              <li>IP address: <code>{myComputerIp}</code></li>
+              <li>Subnet mask: <code>255.255.255.0</code></li>
+              <li>Gateway: <code>{mikroTikLanIp}</code></li>
+              <li>DNS: <code>8.8.8.8</code></li>
+            </ul>
+          </Collapsible>
+
+          <div className="actions" style={{ marginTop: 12 }}>
+            <button onClick={() => setStage('connect')}>← Back</button>
+            <button className="primary" onClick={() => setStage('review')}>
+              {ipResult?.ok ? 'Next →' : 'My computer is ready — Next →'}
             </button>
           </div>
         </div>
       )}
 
-      {(stage === 'running' || stage === 'result') && (
+      {/* STEP 4 — Review & start */}
+      {stage === 'review' && (
         <div className="panel">
-          <h2>{running ? 'Running setup...' : 'Setup finished'}</h2>
-          <LogConsole resetKey={resetKey} />
+          <h3 className="step-title">Review &amp; start</h3>
+          <p className="muted">Here's what will happen. When you're ready, press Start.</p>
+
+          <div className="summary-grid">
+            <div className="summary-label">Site name</div>
+            <div>{siteName}</div>
+            <div className="summary-label">Site network</div>
+            <div><code>192.168.{lanThird}.x</code></div>
+            <div className="summary-label">Router will become</div>
+            <div><code>{mikroTikLanIp}</code></div>
+            <div className="summary-label">Camera / NVR address</div>
+            <div><code>{deviceIp}</code></div>
+            <div className="summary-label">VPN (WireGuard) IP</div>
+            <div><code>{wgIp}</code></div>
+            <div className="summary-label">Connecting to</div>
+            <div><code>{routerIp}</code> as <code>{username}</code></div>
+          </div>
+
+          <div className="banner info">
+            {activeSteps.length} of {SETUP_STEP_LABELS.length} setup tasks will run, then the app verifies each one
+            automatically. This usually takes a minute or two.
+          </div>
+
+          <Collapsible summary="Advanced: choose exactly which tasks run">
+            <div className="checklist">
+              {SETUP_STEP_LABELS.map((label, i) => (
+                <label key={i}>
+                  <input type="checkbox" checked={steps[i]} onChange={() => toggleStep(i)} />
+                  {label}
+                </label>
+              ))}
+            </div>
+            {!steps[2] && (steps[3] || steps[4] || steps[5] || steps[6]) && (
+              <div className="banner warn">
+                The firewall/NAT/watchdog tasks assume the WireGuard tunnel already exists (you've unticked "Configure
+                WireGuard tunnel"). Make sure that's true.
+              </div>
+            )}
+          </Collapsible>
+
+          <div className="actions">
+            <button onClick={() => setStage(changesBridge ? 'prepComputer' : 'connect')}>← Back</button>
+            <button className="primary" onClick={run} disabled={!routerIp}>
+              ▶ Start setup
+            </button>
+          </div>
         </div>
       )}
 
+      {/* Running / result — live progress */}
+      {(stage === 'running' || stage === 'result') && (
+        <div className="panel">
+          <h3 className="step-title">{running ? 'Setting up…' : stage === 'result' ? 'Setup finished' : ''}</h3>
+          {running && (
+            <p className="muted">
+              Working through the setup tasks now — please don't unplug or close the app. Live details are below.
+            </p>
+          )}
+          <div className="run-steps">
+            {activeSteps.map((label) => (
+              <div key={label} className="run-step">
+                <span className="run-step-mark">{running ? '•' : '✓'}</span>
+                {label}
+              </div>
+            ))}
+          </div>
+          <Collapsible summary="Show technical details (live router output)" defaultOpen={running}>
+            <LogConsole resetKey={resetKey} />
+          </Collapsible>
+        </div>
+      )}
+
+      {/* Result actions */}
       {stage === 'result' && result && (
         <div className="panel">
           <div className={`banner ${result.ok ? 'success' : 'error'}`}>
-            {result.ok ? 'Setup completed.' : `Setup finished with issues: ${result.message ?? ''}`}
+            {result.ok
+              ? '✓ Setup completed. A couple of quick things left to finish below.'
+              : `Setup finished with issues: ${result.message ?? ''} — check the technical details above.`}
           </div>
 
           {result.peerBlock && (
             <>
-              <h2>Add this [Peer] block to the EC2 WireGuard (KyospanServer) config</h2>
-              <p className="muted">Do NOT remove or modify any existing [Peer] sections — only append this one.</p>
-              <pre className="console" style={{ whiteSpace: 'pre' }}>
-                {result.peerBlock}
-              </pre>
+              <h3 className="step-title">1. Add this to the EC2 server's WireGuard config</h3>
+              <p className="muted">
+                Append this block to the server (KyospanServer) config. Don't remove or change any existing [Peer]
+                sections.
+              </p>
+              <div className="copy-block">
+                <pre className="console" style={{ whiteSpace: 'pre' }}>{result.peerBlock}</pre>
+                <CopyButton value={result.peerBlock} className="primary" label="Copy peer block" />
+              </div>
             </>
           )}
 
-          <h2>Next: configure the Hikvision device via its web UI</h2>
-          <ul>
-            <li>
-              Static IP: <code>{deviceIp}</code>
-            </li>
-            <li>
-              Subnet mask: <code>255.255.255.0</code>
-            </li>
-            <li>
-              Default gateway: <code>{mikroTikLanIp}</code>
-            </li>
-            <li>
-              DNS: <code>8.8.8.8</code>
-            </li>
-            <li>NTP server: pool.ntp.org</li>
-            <li>SDK port: 8000 (leave default)</li>
-          </ul>
-          <p className="muted">Don't forget to reset this computer's IP back to DHCP once everything is verified.</p>
+          <h3 className="step-title">{result.peerBlock ? '2. ' : ''}Set up the Hikvision device</h3>
+          <p className="muted">In the device's web page, set its network to:</p>
+          <div className="summary-grid">
+            <div className="summary-label">IP address</div>
+            <div><code>{deviceIp}</code> <CopyButton value={deviceIp} label="Copy" /></div>
+            <div className="summary-label">Subnet mask</div>
+            <div><code>255.255.255.0</code></div>
+            <div className="summary-label">Default gateway</div>
+            <div><code>{mikroTikLanIp}</code> <CopyButton value={mikroTikLanIp} label="Copy" /></div>
+            <div className="summary-label">DNS</div>
+            <div><code>8.8.8.8</code></div>
+            <div className="summary-label">NTP server</div>
+            <div><code>pool.ntp.org</code></div>
+            <div className="summary-label">SDK port</div>
+            <div><code>8000</code> (leave default)</div>
+          </div>
 
-          <div className="actions">
+          {changesBridge && (
+            <>
+              <h3 className="step-title">{result.peerBlock ? '3. ' : ''}When you're done — restore your computer</h3>
+              <p className="muted">
+                You set your computer to a fixed IP earlier. Once everything's verified, put it back to automatic so
+                normal internet works again.
+              </p>
+              <div className="actions">
+                <button onClick={resetMyIpToDhcp} disabled={ipApplying || !adapter}>
+                  {ipApplying ? 'Restoring…' : '↺ Reset my computer to automatic (DHCP)'}
+                </button>
+              </div>
+              {ipResult && (
+                <div className={`banner ${ipResult.ok ? 'success' : 'warn'}`} style={{ marginTop: 12 }}>
+                  {ipResult.text}
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="actions" style={{ marginTop: 16 }}>
             <button className="primary" onClick={onFinished}>
-              Done — go to Configured Sites
+              Finish — go to my sites
             </button>
           </div>
         </div>
