@@ -28,12 +28,18 @@ const api = {
     applyStaticIp: (adapterName: string, ip: string, mask: string, gateway: string, dns: string): Promise<boolean> =>
       ipcRenderer.invoke('network:applyStaticIp', adapterName, ip, mask, gateway, dns),
     applyDhcp: (adapterName: string): Promise<boolean> => ipcRenderer.invoke('network:applyDhcp', adapterName),
+    getAdapterMode: (adapterName: string): Promise<'dhcp' | 'static'> =>
+      ipcRenderer.invoke('network:getAdapterMode', adapterName),
   },
   workflow: {
     recoverTunnel: (creds: SshCredentials) => ipcRenderer.invoke('workflow:recoverTunnel', creds),
     addWatchdog: (creds: SshCredentials) => ipcRenderer.invoke('workflow:addWatchdog', creds),
     enableRemoteSupport: (creds: SshCredentials) => ipcRenderer.invoke('workflow:enableRemoteSupport', creds),
     runSetup: (plan: SetupPlan) => ipcRenderer.invoke('workflow:runSetup', plan),
+    configCheck: (siteName: string, creds: SshCredentials) =>
+      ipcRenderer.invoke('workflow:configCheck', siteName, creds),
+    fixBridgeIp: (currentRouterIp: string, creds: SshCredentials, newBridgeIp: string): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke('workflow:fixBridgeIp', currentRouterIp, creds, newBridgeIp),
     wifi: {
       listNetworks: (creds: SshCredentials) => ipcRenderer.invoke('workflow:wifi:listNetworks', creds),
       apply: (

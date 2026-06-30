@@ -9,6 +9,8 @@ export interface SiteRecord {
   deviceGateway: string
   mikroTikPublicKey: string
   dateConfigured: string
+  /** JSON-serialised CheckResult[] from the last setup or config check run. */
+  lastCheckResults?: string
 }
 
 export interface NextSiteSuggestion {
@@ -33,6 +35,14 @@ export interface WorkflowResult {
   ok: boolean
   message?: string
 }
+
+export interface CheckResult {
+  name: string
+  passed: boolean
+}
+
+/** Name of the verification check that confirms the router's bridge/LAN IP matches the site's expected subnet. */
+export const BRIDGE_IP_CHECK_NAME = 'Bridge/LAN IP matches the new address'
 
 export interface NetworkAdapterInfo {
   name: string

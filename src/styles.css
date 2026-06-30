@@ -620,3 +620,176 @@ code {
 .copy-block .console {
   width: 100%;
 }
+
+/* ---- Site detail tab bar ---- */
+.back-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.ip-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ip-toggle-adapter {
+  width: auto;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.ip-toggle-msg {
+  font-size: 12px;
+}
+
+.ip-toggle-msg.ok {
+  color: var(--success);
+}
+
+.ip-toggle-msg.err {
+  color: var(--error);
+}
+
+.site-panel-title {
+  margin-bottom: 14px;
+}
+
+.site-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.site-tab-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 12px;
+  white-space: nowrap;
+}
+
+.site-tab-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.site-tab-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.site-tab-delete {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 18px;
+}
+
+/* Small inline button used inside paragraph text */
+.inline-link-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+/* Actions row with top spacing (used after collapsibles) */
+.actions-top {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* Log console and result banner spacing inside panels */
+.log-area {
+  margin-top: 14px;
+}
+
+.banner-result {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+/* Pre block that preserves exact whitespace (overrides .console pre-wrap) */
+.console.pre-exact {
+  white-space: pre;
+}
+
+/* ---- Wizard head title ---- */
+.wizard-head h2 {
+  margin-top: 0;
+}
+
+/* Small hint text below a form section */
+.hint-text {
+  font-size: 12px;
+}
+
+/* Banner with top spacing only (no bottom override) */
+.banner-top {
+  margin-top: 12px;
+}
+
+/* Actions row with larger top gap (finish/primary CTA) */
+.actions-finish {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+/* ---- Setup result: log / checklist toggle ---- */
+.result-view-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.check-results {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 4px 0 14px;
+}
+
+.check-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+}
+
+.check-mark {
+  font-size: 15px;
+  font-weight: 700;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.check-mark.pass {
+  color: var(--success);
+}
+
+.check-mark.fail {
+  color: var(--error);
+}
+
+.check-name {
+  flex: 1;
+}
+
+.check-name.fail {
+  color: var(--error);
+}

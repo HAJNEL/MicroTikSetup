@@ -13,4 +13,6 @@ export function registerNetworkIpc() {
   )
 
   ipcMain.handle('network:applyDhcp', (_e, adapterName: string) => NetworkHelper.applyDhcp(adapterName))
+
+  ipcMain.handle('network:getAdapterMode', (_e, adapterName: string) => NetworkHelper.getAdapterMode(adapterName))
 }

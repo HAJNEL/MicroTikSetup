@@ -25,6 +25,17 @@ export class SiteRepository {
     fs.appendFileSync(this.path, lines.join('\n') + '\n', 'utf8')
   }
 
+  upsert(record: SiteRecord): void {
+    const all = this.loadAll()
+    const idx = all.findIndex((r) => r.siteName.toLowerCase() === record.siteName.toLowerCase())
+    if (idx >= 0) {
+      all[idx] = record
+      this.saveAll(all)
+    } else {
+      this.append(record)
+    }
+  }
+
   saveAll(records: SiteRecord[]): void {
     const lines = [header(), ...records.map(toCsvLine)]
     fs.writeFileSync(this.path, lines.join('\n') + '\n', 'utf8')
@@ -57,7 +68,7 @@ export class SiteRepository {
 }
 
 function header(): string {
-  return 'SiteName,WireGuardIp,LanSubnet,MikroTikLanIp,DeviceIp,DeviceGateway,MikroTikPublicKey,DateConfigured'
+  return 'SiteName,WireGuardIp,LanSubnet,MikroTikLanIp,DeviceIp,DeviceGateway,MikroTikPublicKey,DateConfigured,LastCheckResults'
 }
 
 function escape(value: string): string {
@@ -77,6 +88,7 @@ function toCsvLine(r: SiteRecord): string {
     r.deviceGateway,
     r.mikroTikPublicKey,
     r.dateConfigured,
+    r.lastCheckResults ?? '',
   ]
     .map(escape)
     .join(',')
@@ -121,6 +133,7 @@ function fromCsvLine(line: string): SiteRecord {
   site.deviceGateway = get(5)
   site.mikroTikPublicKey = get(6)
   site.dateConfigured = get(7)
+  site.lastCheckResults = get(8) || undefined
   return site
 }
 

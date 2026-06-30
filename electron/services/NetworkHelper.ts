@@ -75,6 +75,17 @@ export async function listNetworkAdapters(): Promise<NetworkAdapterInfo[]> {
   return adapters
 }
 
+/** Returns whether an adapter is currently configured for DHCP or a static IP. */
+export async function getAdapterMode(adapterName: string): Promise<'dhcp' | 'static'> {
+  if (process.platform !== 'win32') return 'dhcp'
+  try {
+    const output = await runCommand('netsh', ['interface', 'ipv4', 'show', 'config', `name="${adapterName}"`])
+    return /DHCP enabled:\s+Yes/i.test(output) ? 'dhcp' : 'static'
+  } catch {
+    return 'dhcp'
+  }
+}
+
 /** Runs `netsh interface ipv4 set address ...` elevated (triggers a UAC prompt on Windows). */
 export async function applyStaticIp(
   adapterName: string,

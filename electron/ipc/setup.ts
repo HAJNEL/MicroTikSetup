@@ -3,7 +3,16 @@ import { MikroTikClient } from '../services/MikroTikClient'
 import { ConnectionWatchdog } from '../services/ConnectionWatchdog'
 import { SiteRepository } from '../services/SiteRepository'
 import { createLogger, runAndShow, delay } from './logger'
-import { SetupPlan, SetupStep, SiteRecord, WorkflowResult } from '../shared-types'
+import {
+  SetupPlan,
+  SetupStep,
+  SETUP_STEP_LABELS,
+  SiteRecord,
+  WorkflowResult,
+  SshCredentials,
+  CheckResult,
+  BRIDGE_IP_CHECK_NAME,
+} from '../shared-types'
 
 const EC_SERVER_ENDPOINT = '13.247.35.150'
 const EC_SERVER_PORT = 51820
@@ -14,6 +23,7 @@ export interface SetupResult extends WorkflowResult {
   mikroTikPublicKey?: string
   site?: SiteRecord
   peerBlock?: string
+  checkResults?: CheckResult[]
 }
 
 export function registerSetupIpc(repo: SiteRepository) {
@@ -33,6 +43,20 @@ export function registerSetupIpc(repo: SiteRepository) {
       log('Connected.', 'success')
     } catch (ex: any) {
       log(`Failed to connect: ${ex.message}`, 'error')
+      if (doStep[SetupStep.SaveToCsv]) {
+        const partialSite: SiteRecord = {
+          siteName: plan.siteName,
+          wireGuardIp: plan.wireGuardIp,
+          lanSubnet,
+          mikroTikLanIp,
+          deviceIp,
+          deviceGateway,
+          mikroTikPublicKey: '',
+          dateConfigured: formatDate(new Date()),
+        }
+        repo.upsert(partialSite)
+        log('Site details saved to the tracking list (setup incomplete — connect to the router and run setup again to finish).', 'warn')
+      }
       return { ok: false, message: ex.message }
     }
 
@@ -164,6 +188,7 @@ export function registerSetupIpc(repo: SiteRepository) {
 
     let bridgeChangeOk = true
     let finalClient = client
+    let checkResults: CheckResult[] = []
     if (doStep[SetupStep.ChangeBridgeIp]) {
       log('')
       log('=== Changing bridge/LAN IP (1.10-1.11) ===')
@@ -191,6 +216,9 @@ export function registerSetupIpc(repo: SiteRepository) {
         log('Open WinBox -> Neighbors -> click the router MAC address to recover, then')
         log('verify the bridge address manually with: /ip address print')
         bridgeChangeOk = false
+        // Couldn't reconnect to verify anything — record this as a failed check instead of silently
+        // returning no results, so the mismatch is visible on the result screen and saved to the site record.
+        checkResults = [{ name: BRIDGE_IP_CHECK_NAME, passed: false }]
       } else {
         log('Reconnected. Running full verification (1.13)...', 'success')
         for (const cmd of [
@@ -205,10 +233,10 @@ export function registerSetupIpc(repo: SiteRepository) {
           await runAndShow(client2, log, cmd, cmd)
         }
         finalClient = client2
-        await runVerificationChecks(client2, doStep, log, lanSubnet, plan.wireGuardIp, mikroTikLanIp)
+        checkResults = await runVerificationChecks(client2, doStep, log, lanSubnet, plan.wireGuardIp, mikroTikLanIp)
       }
     } else {
-      await runVerificationChecks(client, doStep, log, lanSubnet, plan.wireGuardIp, mikroTikLanIp)
+      checkResults = await runVerificationChecks(client, doStep, log, lanSubnet, plan.wireGuardIp, mikroTikLanIp)
     }
 
     try {
@@ -251,13 +279,182 @@ export function registerSetupIpc(repo: SiteRepository) {
         deviceGateway,
         mikroTikPublicKey,
         dateConfigured: formatDate(new Date()),
+        lastCheckResults: checkResults.length > 0 ? JSON.stringify(checkResults) : undefined,
       }
-      repo.append(site)
+      repo.upsert(site)
       log('Saved this site to the tracking CSV.', 'success')
     }
 
-    return { ok: bridgeChangeOk, mikroTikPublicKey, site, peerBlock }
+    return { ok: bridgeChangeOk, mikroTikPublicKey, site, peerBlock, checkResults }
   })
+
+  ipcMain.handle(
+    'workflow:fixBridgeIp',
+    async (
+      event: IpcMainInvokeEvent,
+      currentRouterIp: string,
+      creds: SshCredentials,
+      newBridgeIp: string,
+    ): Promise<{ ok: boolean; message?: string }> => {
+      const log = createLogger(event)
+      const client = new MikroTikClient(currentRouterIp, creds.username, creds.password)
+
+      try {
+        log(`Connecting to ${currentRouterIp}...`)
+        await client.connect()
+        log('Connected.', 'success')
+      } catch (ex: any) {
+        log(`Failed to connect: ${ex.message}`, 'error')
+        return { ok: false, message: ex.message }
+      }
+
+      // Auto-detect which IP address entry belongs to the bridge interface.
+      let bridgeIdx = 0
+      try {
+        const out = await client.run('/ip address print terse where interface=bridge')
+        const m = out.match(/^\s*(\d+)/m)
+        if (m) {
+          bridgeIdx = parseInt(m[1], 10)
+          log(`Found bridge address at entry ${bridgeIdx}.`)
+        } else {
+          log('Could not detect bridge entry index — defaulting to 0.', 'warn')
+        }
+      } catch {
+        log('Could not query IP address table — defaulting to entry 0.', 'warn')
+      }
+
+      log(`Setting bridge IP to ${newBridgeIp}/24 (this will disconnect the current session)…`)
+      try {
+        await client.run(`/ip address set ${bridgeIdx} address=${newBridgeIp}/24`)
+      } catch {
+        // Expected — connection drops as the IP takes effect.
+      }
+      client.disconnect()
+
+      log('')
+      log(`Waiting for router to come up at ${newBridgeIp}…`)
+      await delay(8000)
+
+      const client2 = new MikroTikClient(newBridgeIp, creds.username, creds.password)
+      const reconnected = await tryConnectWithRetries(client2, 6, 5000)
+      if (!reconnected) {
+        log(`Could not reconnect to ${newBridgeIp}.`, 'error')
+        log('Open WinBox → Neighbors → click the router MAC address to verify the change took effect.')
+        return { ok: false, message: `Could not reconnect to ${newBridgeIp} after IP change` }
+      }
+
+      log(`Reconnected at ${newBridgeIp}.`, 'success')
+      const addrOut = await runAndShow(client2, log, 'Verify IP addresses', '/ip address print')
+      try { client2.disconnect() } catch { /* gone */ }
+
+      const verified = addrOut.includes(`${newBridgeIp}/24`)
+      if (verified) {
+        log(`Bridge IP is now ${newBridgeIp}/24. ✓`, 'success')
+      } else {
+        log(`Bridge IP change may not have applied correctly — check /ip address print manually.`, 'warn')
+      }
+
+      return { ok: verified, message: verified ? undefined : 'Bridge IP was changed but could not be verified in the output.' }
+    },
+  )
+
+  ipcMain.handle(
+    'workflow:configCheck',
+    async (
+      event: IpcMainInvokeEvent,
+      siteName: string,
+      creds: SshCredentials,
+    ): Promise<{
+      ok: boolean
+      message?: string
+      mikroTikPublicKey?: string
+      updatedSite?: SiteRecord
+      checkResults?: CheckResult[]
+    }> => {
+      const log = createLogger(event)
+      const client = new MikroTikClient(creds.routerIp, creds.username, creds.password)
+
+      try {
+        log(`Connecting to ${creds.routerIp}...`)
+        await client.connect()
+        log('Connected.', 'success')
+      } catch (ex: any) {
+        log(`Failed to connect: ${ex.message}`, 'error')
+        return { ok: false, message: ex.message }
+      }
+
+      // Load site record up-front so subnet/IP info is available for verification checks.
+      const all = repo.loadAll()
+      const idx = all.findIndex((r) => r.siteName.toLowerCase() === siteName.toLowerCase())
+      const siteRecord = idx >= 0 ? all[idx] : undefined
+
+      log('')
+      log('=== Reading current router configuration ===')
+
+      let mikroTikPublicKey = ''
+
+      const tryRead = async (label: string, cmd: string) => {
+        try {
+          return await runAndShow(client, log, label, cmd)
+        } catch (ex: any) {
+          log(`  Could not read ${label}: ${ex.message}`, 'warn')
+          return ''
+        }
+      }
+
+      const wgDetail = await tryRead('WireGuard interface detail', `/interface wireguard print detail where name=${WG_IFACE}`)
+      mikroTikPublicKey = extractPublicKey(wgDetail)
+      if (mikroTikPublicKey) log(`  -> Public key: ${mikroTikPublicKey}`)
+      else log('  -> WireGuard interface not found or public key unavailable.', 'warn')
+
+      await tryRead('WireGuard peers', '/interface wireguard peers print detail')
+      await tryRead('IP addresses', '/ip address print')
+      await tryRead('Firewall filter rules', '/ip firewall filter print terse')
+      await tryRead('Firewall NAT rules', '/ip firewall nat print terse')
+      await tryRead('System scheduler (watchdog)', '/system scheduler print terse')
+
+      // Run all applicable verification checks (skip LTE cycle, since we didn't power-cycle the modem here).
+      const configCheckSteps = Array.from(
+        { length: SETUP_STEP_LABELS.length },
+        (_, i) => i !== SetupStep.LteCycle && i !== SetupStep.SaveToCsv && i !== SetupStep.VerifyInternet,
+      )
+      const checkResults = await runVerificationChecks(
+        client,
+        configCheckSteps,
+        log,
+        siteRecord?.lanSubnet ?? '',
+        siteRecord?.wireGuardIp ?? '',
+        siteRecord?.mikroTikLanIp ?? '',
+      )
+
+      try {
+        client.disconnect()
+      } catch {
+        /* already gone */
+      }
+
+      let updatedSite: SiteRecord | undefined
+      if (idx >= 0) {
+        const needsKeyUpdate = !!mikroTikPublicKey && all[idx].mikroTikPublicKey !== mikroTikPublicKey
+        all[idx] = {
+          ...all[idx],
+          ...(needsKeyUpdate ? { mikroTikPublicKey } : {}),
+          lastCheckResults: checkResults.length > 0 ? JSON.stringify(checkResults) : all[idx].lastCheckResults,
+        }
+        repo.saveAll(all)
+        updatedSite = all[idx]
+        if (needsKeyUpdate) {
+          log('')
+          log(`Public key saved to site record for "${siteName}".`, 'success')
+        } else if (mikroTikPublicKey) {
+          log('')
+          log('Public key matches existing record — no update needed.', 'success')
+        }
+      }
+
+      return { ok: true, mikroTikPublicKey, updatedSite, checkResults }
+    },
+  )
 }
 
 async function runVerificationChecks(
@@ -267,27 +464,28 @@ async function runVerificationChecks(
   lanSubnet: string,
   wgIp: string,
   mikroTikLanIp: string,
-): Promise<void> {
+): Promise<CheckResult[]> {
   log('')
   log('=== Running post-setup verification checks ===')
-  const results: boolean[] = []
+  const checkResults: CheckResult[] = []
 
   const check = async (name: string, command: string, isOk: (output: string) => boolean) => {
     let output: string
     try {
       output = await client.run(command)
     } catch (ex: any) {
-      results.push(false)
+      checkResults.push({ name, passed: false })
       log(`  [FAIL] ${name} (could not query router: ${ex.message})`, 'error')
       return
     }
     const passed = isOk(output)
-    results.push(passed)
+    checkResults.push({ name, passed })
     log(`  [${passed ? 'PASS' : 'FAIL'}] ${name}`, passed ? 'success' : 'error')
   }
 
   if (doStep[SetupStep.DisableDhcp])
-    await check('DHCP server is disabled', '/ip dhcp-server print terse', (o) => o.includes('disabled=yes'))
+    // Pass if there is no enabled DHCP server (no output, or all entries show disabled=yes)
+    await check('DHCP server is disabled', '/ip dhcp-server print terse', (o) => !o.includes('disabled=no'))
 
   if (doStep[SetupStep.LteCycle])
     await check(
@@ -307,10 +505,10 @@ async function runVerificationChecks(
   }
 
   if (doStep[SetupStep.FirewallForward]) {
-    await check('Firewall forward rule (WG -> LAN) exists', '/ip firewall filter print terse', (o) =>
+    await check('Firewall forward rule (WG → LAN) exists', '/ip firewall filter print terse', (o) =>
       o.includes('allow WG to LAN (HikCentral)'),
     )
-    await check('Firewall forward rule (LAN -> WG) exists', '/ip firewall filter print terse', (o) =>
+    await check('Firewall forward rule (LAN → WG) exists', '/ip firewall filter print terse', (o) =>
       o.includes('allow LAN to WG (HikCentral)'),
     )
   }
@@ -330,18 +528,22 @@ async function runVerificationChecks(
   if (doStep[SetupStep.Watchdog])
     await check('VPN-recovery watchdog (scheduler) exists', '/system scheduler print terse', ConnectionWatchdog.isPresent)
 
-  if (doStep[SetupStep.ChangeBridgeIp])
-    await check('Bridge/LAN IP matches the new address', '/ip address print terse', (o) =>
-      o.includes(`address=${mikroTikLanIp}/24`),
-    )
+  // Always verified, regardless of whether this run changed the bridge IP — a router whose bridge
+  // never got moved to the site's subnet (e.g. a previous run's reconnect failed silently) is a
+  // common, hard-to-diagnose failure mode and should always be caught.
+  if (mikroTikLanIp)
+    await check(BRIDGE_IP_CHECK_NAME, '/ip address print terse', (o) => o.includes(`address=${mikroTikLanIp}/24`))
 
-  await check('Router can reach the internet (ping 8.8.8.8)', '/ping 8.8.8.8 count=4', (o) => o.includes('packet-loss=0%'))
+  if (doStep[SetupStep.VerifyInternet])
+    await check('Router can reach the internet (ping 8.8.8.8)', '/ping 8.8.8.8 count=4', (o) => o.includes('packet-loss=0%'))
 
   log('')
-  const failed = results.filter((r) => !r).length
-  if (results.length === 0) log('No applicable checks for the selected steps.')
-  else if (failed === 0) log(`All ${results.length} verification checks PASSED.`, 'success')
-  else log(`${failed} of ${results.length} verification checks FAILED — review the [FAIL] items above.`, 'error')
+  const failed = checkResults.filter((r) => !r.passed).length
+  if (checkResults.length === 0) log('No applicable checks for the selected steps.')
+  else if (failed === 0) log(`All ${checkResults.length} verification checks PASSED.`, 'success')
+  else log(`${failed} of ${checkResults.length} verification checks FAILED — review the [FAIL] items above.`, 'error')
+
+  return checkResults
 }
 
 async function tryConnectWithRetries(client: MikroTikClient, attempts: number, delayMs: number): Promise<boolean> {

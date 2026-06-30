@@ -3,7 +3,8 @@ import LogConsole from '../components/LogConsole'
 import Stepper from '../components/Stepper'
 import Collapsible from '../components/Collapsible'
 import CopyButton from '../components/CopyButton'
-import { SETUP_STEP_LABELS, STEP_CHANGE_BRIDGE_IP, SiteRecord, NetworkAdapterInfo } from '../types'
+import BridgeIpWarning from '../components/BridgeIpWarning'
+import { SETUP_STEP_LABELS, STEP_CHANGE_BRIDGE_IP, SiteRecord, NetworkAdapterInfo, CheckResult, BRIDGE_IP_CHECK_NAME } from '../types'
 
 interface Props {
   onFinished: () => void
@@ -11,6 +12,13 @@ interface Props {
 }
 
 type Stage = 'name' | 'connect' | 'prepComputer' | 'review' | 'running' | 'result'
+type ResultView = 'checklist' | 'log'
+
+/** Derive e.g. 192.168.88.2 from 192.168.88.1 */
+function deriveHostIp(baseIp: string, host: number): string {
+  const parts = baseIp.split('.')
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.${host}` : baseIp
+}
 
 export default function NewSiteWizard({ onFinished, onCancel }: Props) {
   const [stage, setStage] = useState<Stage>('name')
@@ -28,7 +36,6 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
 
-  // This-computer IP helper (for the "prepare your computer" step)
   const [adapters, setAdapters] = useState<NetworkAdapterInfo[]>([])
   const [adapter, setAdapter] = useState('')
   const [ipApplying, setIpApplying] = useState(false)
@@ -36,9 +43,14 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
 
   const [resetKey, setResetKey] = useState(0)
   const [running, setRunning] = useState(false)
-  const [result, setResult] = useState<{ ok: boolean; message?: string; peerBlock?: string; site?: SiteRecord } | null>(
-    null,
-  )
+  const [resultView, setResultView] = useState<ResultView>('checklist')
+  const [result, setResult] = useState<{
+    ok: boolean
+    message?: string
+    peerBlock?: string
+    site?: SiteRecord
+    checkResults?: CheckResult[]
+  } | null>(null)
 
   useEffect(() => {
     window.api.sites.suggestNext().then((sug) => {
@@ -62,13 +74,16 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
   const myComputerIp = `192.168.${lanThird}.2`
   const changesBridge = steps[STEP_CHANGE_BRIDGE_IP]
 
-  // Stepper labels adapt to whether the LAN-IP change (and thus the computer-prep step) is in play.
-  const stageOrder: Stage[] = changesBridge
-    ? ['name', 'connect', 'prepComputer', 'review', 'running']
-    : ['name', 'connect', 'review', 'running']
-  const stepperLabels = changesBridge
-    ? ['Name', 'Connect', 'Your PC', 'Review', 'Run']
-    : ['Name', 'Connect', 'Review', 'Run']
+  // When changing bridge: set PC to the NEW subnet so it stays connected after the IP change.
+  // When not changing bridge: set PC to same subnet as the router's current IP (static, because
+  // setup will disable DHCP and the PC would otherwise lose its address on reconnect).
+  const prepIp = changesBridge ? myComputerIp : deriveHostIp(routerIp || '192.168.88.1', 2)
+  const prepGateway = changesBridge ? mikroTikLanIp : (routerIp || '192.168.88.1')
+
+  // prepComputer is always in the stage flow now
+  const stageOrder: Stage[] = ['name', 'connect', 'prepComputer', 'review', 'running']
+  const stepperLabels = ['Name', 'Connect', 'Your PC', 'Review', 'Run']
+
   const currentStepIndex = useMemo(() => {
     const s: Stage = stage === 'result' ? 'running' : stage
     const idx = stageOrder.indexOf(s)
@@ -95,20 +110,19 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
     setSteps((prev) => prev.map((v, idx) => (idx === i ? !v : v)))
   }
 
-  function afterConnect() {
-    setStage(changesBridge ? 'prepComputer' : 'review')
-  }
-
   async function applyMyIp() {
     if (!adapter) return
     setIpApplying(true)
     setIpResult(null)
     try {
-      const ok = await window.api.network.applyStaticIp(adapter, myComputerIp, '255.255.255.0', mikroTikLanIp, '8.8.8.8')
+      const ok = await window.api.network.applyStaticIp(adapter, prepIp, '255.255.255.0', prepGateway, '8.8.8.8')
       setIpResult(
         ok
-          ? { ok: true, text: `Done — "${adapter}" is now set to ${myComputerIp}. You can continue.` }
-          : { ok: false, text: 'That didn\'t complete. Did you approve the Windows permission (UAC) prompt? You can try again, or set it manually using the steps below.' },
+          ? { ok: true, text: `Done — "${adapter}" is now set to ${prepIp}. You can continue.` }
+          : {
+              ok: false,
+              text: "That didn't complete. Did you approve the Windows permission (UAC) prompt? You can try again, or set it manually using the steps below.",
+            },
       )
     } catch (ex: any) {
       setIpResult({ ok: false, text: ex?.message ?? String(ex) })
@@ -126,7 +140,7 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
       setIpResult(
         ok
           ? { ok: true, text: `"${adapter}" is back to automatic (DHCP).` }
-          : { ok: false, text: 'That didn\'t complete (the Windows permission prompt may have been declined).' },
+          : { ok: false, text: "That didn't complete (the Windows permission prompt may have been declined)." },
       )
     } finally {
       setIpApplying(false)
@@ -153,17 +167,22 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
     } finally {
       setRunning(false)
       setStage('result')
+      setResultView('checklist')
     }
   }
 
   const activeSteps = SETUP_STEP_LABELS.filter((_, i) => steps[i])
 
+  // Step numbering for result actions (peer block + hikvision + restore PC)
+  let stepNum = 0
+  const nextStep = () => { stepNum += 1; return stepNum }
+
   return (
     <div className="wizard">
       <div className="wizard-head">
-        <h2 style={{ marginTop: 0 }}>Set up a new site</h2>
+        <h2>Set up a new site</h2>
         {stage !== 'running' && stage !== 'result' && (
-          <button onClick={onCancel}>Cancel</button>
+          <button type="button" onClick={onCancel}>Cancel</button>
         )}
       </div>
 
@@ -175,8 +194,9 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
           <h3 className="step-title">Name this site</h3>
           <p className="muted">Give the site a short, recognisable name. We'll pick sensible network settings for you.</p>
           <div className="field">
-            <label>Site name</label>
+            <label htmlFor="wiz-site-name">Site name</label>
             <input
+              id="wiz-site-name"
               value={siteName}
               onChange={(e) => setSiteName(e.target.value)}
               placeholder="e.g. Riverland"
@@ -198,12 +218,13 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
             </p>
             <div className="row">
               <div className="field">
-                <label>WireGuard (VPN) IP for this site</label>
-                <input value={wgIp} onChange={(e) => setWgIp(e.target.value)} />
+                <label htmlFor="wiz-wg-ip">WireGuard (VPN) IP for this site</label>
+                <input id="wiz-wg-ip" value={wgIp} onChange={(e) => setWgIp(e.target.value)} />
               </div>
               <div className="field">
-                <label>LAN network (the X in 192.168.X.0)</label>
+                <label htmlFor="wiz-lan-third">LAN network (the X in 192.168.X.0)</label>
                 <input
+                  id="wiz-lan-third"
                   type="number"
                   value={lanThird}
                   onChange={(e) => setLanThird(parseInt(e.target.value, 10) || 0)}
@@ -213,7 +234,7 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
           </Collapsible>
 
           <div className="actions">
-            <button className="primary" onClick={proceedFromName} disabled={!siteName.trim() || !lanThird}>
+            <button type="button" className="primary" onClick={proceedFromName} disabled={!siteName.trim() || !lanThird}>
               Next →
             </button>
           </div>
@@ -227,47 +248,66 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
           {subnetWarning && <div className="banner warn">{subnetWarning}</div>}
           <h3 className="step-title">Connect to the router</h3>
           <p className="muted">
-            Make sure your computer is plugged into one of the router's LAN ports. New routers answer at{' '}
+            Plug your computer into one of the router's LAN ports. New routers answer at{' '}
             <code>192.168.88.1</code> with username <code>admin</code> and a blank password.
           </p>
           {detecting && <p className="muted">Looking for your router…</p>}
           <div className="row">
             <div className="field">
-              <label>Router's current address</label>
-              <input value={routerIp} onChange={(e) => setRouterIp(e.target.value)} placeholder="192.168.88.1" />
+              <label htmlFor="wiz-router-ip">Router's current address</label>
+              <input
+                id="wiz-router-ip"
+                value={routerIp}
+                onChange={(e) => setRouterIp(e.target.value)}
+                placeholder="192.168.88.1"
+              />
             </div>
             <div className="field">
-              <label>Username</label>
-              <input value={username} onChange={(e) => setUsername(e.target.value)} />
+              <label htmlFor="wiz-username">Username</label>
+              <input id="wiz-username" value={username} onChange={(e) => setUsername(e.target.value)} />
             </div>
             <div className="field">
-              <label>Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <label htmlFor="wiz-password">Password</label>
+              <input
+                id="wiz-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
             </div>
           </div>
           <div className="actions">
-            <button onClick={() => setStage('name')}>← Back</button>
-            <button className="primary" onClick={afterConnect} disabled={!routerIp}>
+            <button type="button" onClick={() => setStage('name')}>← Back</button>
+            <button type="button" className="primary" onClick={() => setStage('prepComputer')} disabled={!routerIp}>
               Next →
             </button>
           </div>
-          <p className="muted" style={{ fontSize: 12 }}>
-            We'll connect when you press Start on the review screen, so you can fix the address here if it's wrong.
+          <p className="muted hint-text">
+            We'll connect when you press Start on the review screen — you can still fix the address if it's wrong.
           </p>
         </div>
       )}
 
-      {/* STEP 3 — Prepare this computer (only when the LAN IP will change) */}
+      {/* STEP 3 — Prepare this computer */}
       {stage === 'prepComputer' && (
         <div className="panel">
           <h3 className="step-title">Prepare your computer</h3>
-          <p>
-            During setup the router's address changes to <code>{mikroTikLanIp}</code>. For your computer to keep
-            talking to it, your network adapter needs a matching address. We can set this for you:
-          </p>
+          {changesBridge ? (
+            <p>
+              Setup will change the router's LAN address from <code>{routerIp}</code> to{' '}
+              <code>{mikroTikLanIp}</code>. Set your computer to the new subnet <em>now</em> so it stays connected
+              when the change happens.
+            </p>
+          ) : (
+            <p>
+              Setup will disable the router's DHCP server. Set your computer to a static IP on the same subnet
+              so it stays connected even after DHCP is turned off.
+            </p>
+          )}
+
           <div className="field">
-            <label>Which network adapter is plugged into the router?</label>
-            <select value={adapter} onChange={(e) => setAdapter(e.target.value)} disabled={ipApplying}>
+            <label htmlFor="wiz-adapter">Which network adapter is plugged into the router?</label>
+            <select id="wiz-adapter" value={adapter} onChange={(e) => setAdapter(e.target.value)} disabled={ipApplying}>
               {adapters.length === 0 && <option value="">No adapters found</option>}
               {adapters.map((a) => (
                 <option key={a.name} value={a.name}>
@@ -276,17 +316,20 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
               ))}
             </select>
           </div>
+
           <p className="muted">
-            This sets <code>{adapter || 'your adapter'}</code> to IP <code>{myComputerIp}</code>, gateway{' '}
-            <code>{mikroTikLanIp}</code>. Windows will ask for permission — approve it.
+            This will set <code>{adapter || 'your adapter'}</code> to IP <code>{prepIp}</code>, subnet{' '}
+            <code>255.255.255.0</code>, gateway <code>{prepGateway}</code>. Windows will ask for permission — approve it.
           </p>
+
           <div className="actions">
-            <button className="primary" onClick={applyMyIp} disabled={ipApplying || !adapter}>
-              {ipApplying ? 'Setting…' : '⚙ Set my computer\'s IP automatically'}
+            <button type="button" className="primary" onClick={applyMyIp} disabled={ipApplying || !adapter}>
+              {ipApplying ? 'Setting…' : "⚙ Set my computer's IP automatically"}
             </button>
           </div>
+
           {ipResult && (
-            <div className={`banner ${ipResult.ok ? 'success' : 'warn'}`} style={{ marginTop: 12 }}>
+            <div className={`banner banner-top ${ipResult.ok ? 'success' : 'warn'}`}>
               {ipResult.text}
             </div>
           )}
@@ -294,16 +337,16 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
           <Collapsible summary="Prefer to set it yourself? Manual steps">
             <p className="muted">In Windows Settings → Network &amp; Internet → your Ethernet adapter, set:</p>
             <ul>
-              <li>IP address: <code>{myComputerIp}</code></li>
+              <li>IP address: <code>{prepIp}</code></li>
               <li>Subnet mask: <code>255.255.255.0</code></li>
-              <li>Gateway: <code>{mikroTikLanIp}</code></li>
+              <li>Gateway: <code>{prepGateway}</code></li>
               <li>DNS: <code>8.8.8.8</code></li>
             </ul>
           </Collapsible>
 
-          <div className="actions" style={{ marginTop: 12 }}>
-            <button onClick={() => setStage('connect')}>← Back</button>
-            <button className="primary" onClick={() => setStage('review')}>
+          <div className="actions-top">
+            <button type="button" onClick={() => setStage('connect')}>← Back</button>
+            <button type="button" className="primary" onClick={() => setStage('review')}>
               {ipResult?.ok ? 'Next →' : 'My computer is ready — Next →'}
             </button>
           </div>
@@ -354,34 +397,79 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
           </Collapsible>
 
           <div className="actions">
-            <button onClick={() => setStage(changesBridge ? 'prepComputer' : 'connect')}>← Back</button>
-            <button className="primary" onClick={run} disabled={!routerIp}>
+            <button type="button" onClick={() => setStage('prepComputer')}>← Back</button>
+            <button type="button" className="primary" onClick={run} disabled={!routerIp}>
               ▶ Start setup
             </button>
           </div>
         </div>
       )}
 
-      {/* Running / result — live progress */}
+      {/* Running & live progress panel */}
       {(stage === 'running' || stage === 'result') && (
         <div className="panel">
-          <h3 className="step-title">{running ? 'Setting up…' : stage === 'result' ? 'Setup finished' : ''}</h3>
+          <h3 className="step-title">{running ? 'Setting up…' : 'Setup finished'}</h3>
+
           {running && (
-            <p className="muted">
-              Working through the setup tasks now — please don't unplug or close the app. Live details are below.
-            </p>
-          )}
-          <div className="run-steps">
-            {activeSteps.map((label) => (
-              <div key={label} className="run-step">
-                <span className="run-step-mark">{running ? '•' : '✓'}</span>
-                {label}
+            <>
+              <p className="muted">
+                Working through the setup tasks now — please don't unplug or close the app. Live details are below.
+              </p>
+              <div className="run-steps">
+                {activeSteps.map((label) => (
+                  <div key={label} className="run-step">
+                    <span className="run-step-mark">•</span>
+                    {label}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <Collapsible summary="Show technical details (live router output)" defaultOpen={running}>
-            <LogConsole resetKey={resetKey} />
-          </Collapsible>
+              <Collapsible summary="Show technical details (live router output)" defaultOpen>
+                <LogConsole resetKey={resetKey} />
+              </Collapsible>
+            </>
+          )}
+
+          {!running && stage === 'result' && (
+            <>
+              <div className="result-view-toggle">
+                <button
+                  type="button"
+                  className={resultView === 'checklist' ? 'primary' : ''}
+                  onClick={() => setResultView('checklist')}
+                >
+                  ✓ Checklist
+                </button>
+                <button
+                  type="button"
+                  className={resultView === 'log' ? 'primary' : ''}
+                  onClick={() => setResultView('log')}
+                >
+                  📋 Technical log
+                </button>
+              </div>
+
+              {resultView === 'checklist' && (
+                <>
+                  {result?.checkResults && result.checkResults.length > 0 ? (
+                    <div className="check-results">
+                      {result.checkResults.map((cr) => (
+                        <div key={cr.name} className="check-item">
+                          <span className={`check-mark ${cr.passed ? 'pass' : 'fail'}`}>
+                            {cr.passed ? '✓' : '✗'}
+                          </span>
+                          <span className={`check-name ${cr.passed ? '' : 'fail'}`}>{cr.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted">No verification results available — switch to Technical log for details.</p>
+                  )}
+                </>
+              )}
+
+              {resultView === 'log' && <LogConsole resetKey={resetKey} />}
+            </>
+          )}
         </div>
       )}
 
@@ -391,24 +479,28 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
           <div className={`banner ${result.ok ? 'success' : 'error'}`}>
             {result.ok
               ? '✓ Setup completed. A couple of quick things left to finish below.'
-              : `Setup finished with issues: ${result.message ?? ''} — check the technical details above.`}
+              : `Setup finished with issues: ${result.message ?? ''} — switch to "Technical log" above for details.`}
           </div>
+
+          {result.checkResults?.some((r) => r.name === BRIDGE_IP_CHECK_NAME && !r.passed) && (
+            <BridgeIpWarning mikroTikLanIp={mikroTikLanIp} />
+          )}
 
           {result.peerBlock && (
             <>
-              <h3 className="step-title">1. Add this to the EC2 server's WireGuard config</h3>
+              <h3 className="step-title">{nextStep()}. Add this to the EC2 server's WireGuard config</h3>
               <p className="muted">
                 Append this block to the server (KyospanServer) config. Don't remove or change any existing [Peer]
                 sections.
               </p>
               <div className="copy-block">
-                <pre className="console" style={{ whiteSpace: 'pre' }}>{result.peerBlock}</pre>
+                <pre className="console pre-exact">{result.peerBlock}</pre>
                 <CopyButton value={result.peerBlock} className="primary" label="Copy peer block" />
               </div>
             </>
           )}
 
-          <h3 className="step-title">{result.peerBlock ? '2. ' : ''}Set up the Hikvision device</h3>
+          <h3 className="step-title">{nextStep()}. Set up the Hikvision device</h3>
           <p className="muted">In the device's web page, set its network to:</p>
           <div className="summary-grid">
             <div className="summary-label">IP address</div>
@@ -425,28 +517,24 @@ export default function NewSiteWizard({ onFinished, onCancel }: Props) {
             <div><code>8000</code> (leave default)</div>
           </div>
 
-          {changesBridge && (
-            <>
-              <h3 className="step-title">{result.peerBlock ? '3. ' : ''}When you're done — restore your computer</h3>
-              <p className="muted">
-                You set your computer to a fixed IP earlier. Once everything's verified, put it back to automatic so
-                normal internet works again.
-              </p>
-              <div className="actions">
-                <button onClick={resetMyIpToDhcp} disabled={ipApplying || !adapter}>
-                  {ipApplying ? 'Restoring…' : '↺ Reset my computer to automatic (DHCP)'}
-                </button>
-              </div>
-              {ipResult && (
-                <div className={`banner ${ipResult.ok ? 'success' : 'warn'}`} style={{ marginTop: 12 }}>
-                  {ipResult.text}
-                </div>
-              )}
-            </>
+          <h3 className="step-title">{nextStep()}. Restore your computer's network</h3>
+          <p className="muted">
+            You set your computer to a static IP earlier. Once everything is verified and you're done, put it back to
+            automatic so normal internet works again.
+          </p>
+          <div className="actions">
+            <button type="button" onClick={resetMyIpToDhcp} disabled={ipApplying || !adapter}>
+              {ipApplying ? 'Restoring…' : '↺ Reset my computer to automatic (DHCP)'}
+            </button>
+          </div>
+          {ipResult && (
+            <div className={`banner banner-top ${ipResult.ok ? 'success' : 'warn'}`}>
+              {ipResult.text}
+            </div>
           )}
 
-          <div className="actions" style={{ marginTop: 16 }}>
-            <button className="primary" onClick={onFinished}>
+          <div className="actions-finish">
+            <button type="button" className="primary" onClick={onFinished}>
               Finish — go to my sites
             </button>
           </div>
